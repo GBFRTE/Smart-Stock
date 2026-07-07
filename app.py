@@ -110,10 +110,10 @@ st.sidebar.markdown(
 # Render organized layout breakdowns
 sb_col1, sb_col2 = st.sidebar.columns(2)
 sb_col1.metric("Unique Parts", sb_total_types)
-sb_col2.metric("Total Units On Hand", sb_total_units)
+sb_col2.metric("Total On Hand", sb_total_units)
 
 sb_col3, sb_col4 = st.sidebar.columns(2)
-sb_col3.metric("Healthy Stocked Lines", sb_healthy_parts)
+sb_col3.metric("Healthy Lines", sb_healthy_parts)
 sb_col4.metric("Procurement Due", sb_needs_purchase, delta=f"+{sb_needs_purchase}" if sb_needs_purchase > 0 else None, delta_color="inverse")
 
 st.sidebar.write("---")
@@ -121,22 +121,6 @@ st.sidebar.write("---")
 st.sidebar.header("🇮🇩 Marketplace Settings")
 selected_marketplace = st.sidebar.selectbox("Select Platform", ["Tokopedia", "Shopee", "Lazada"], index=0)
 selected_filter = st.sidebar.selectbox("Apply Filter / Sorting", ["Default", "Cheapest", "Most Sold", "Trusted"], index=0)
-
-st.sidebar.write("---")
-
-st.sidebar.header("🔍 Part Name Finder")
-lookup_number = st.sidebar.text_input("Enter Part Number", placeholder="e.g., LF3806", key="sidebar_lookup")
-
-if lookup_number.strip():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT part_name FROM inventory WHERE LOWER(part_number) = LOWER(?) LIMIT 1", (lookup_number.strip(),))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        st.sidebar.success(f"✅ **Match Found:**\n\n{result[0]}")
-    else:
-        st.sidebar.error("❌ No matching part number found.")
 
 # --- MAIN INTERFACE NAVIGATION ---
 tab_view, tab_add, tab_modify, tab_basket, tab_gemini = st.tabs([
@@ -183,7 +167,7 @@ with tab_add:
                 st.rerun()
 
 # ==========================================
-# TAB 3: MODIFY PART
+# TAB 3: MODIFY PART (BUG-FIXED)
 # ==========================================
 with tab_modify:
     st.subheader("Update Existing Part Details")
@@ -191,9 +175,13 @@ with tab_modify:
     parts_df = pd.read_sql_query("SELECT id, part_name, part_number FROM inventory", conn)
     conn.close()
     
-    if not parts_df.empty:
-        part_options = {f"{row['part_name']} [{row['part_number'] or 'No Number'}]": row['id'] for _, row in parts_df.iterrows()}
-        selected_id = part_options[st.selectbox("Select Part to Update", list(part_options.keys()))]
+    if parts_df.empty:
+        st.info("No items found in your active inventory data to modify.")
+    else:
+        # BUG FIX: Formatted options with ID index trackers to avoid collisions on duplicate names
+        part_options = {f"{row['part_name']} [{row['part_number'] or 'No Number'}] (ID: {row['id']})": row['id'] for _, row in parts_df.iterrows()}
+        selected_label = st.selectbox("Select Part to Update", list(part_options.keys()))
+        selected_id = part_options[selected_label]
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -202,20 +190,24 @@ with tab_modify:
         conn.close()
         
         if current_details:
-            with st.form("modify_part_form"):
-                mod_name = st.text_input("Part Name", value=current_details[0])
-                mod_number = st.text_input("Part Number", value=current_details[1])
+            # BUG FIX: Key form uniquely to the specific component ID to prevent layout bleeding on select box changes
+            with st.form(f"modify_part_form_{selected_id}"):
+                mod_name = st.text_input("Part Name", value=str(current_details[0]))
+                mod_number = st.text_input("Part Number", value=str(current_details[1] if current_details[1] else ""))
                 mod_stock = st.number_input("Current Stock", min_value=0, value=int(current_details[2]))
                 mod_qty_buy = st.number_input("Quantity to Buy", min_value=0, value=int(current_details[3]))
                 
                 if st.form_submit_button("Update Part Details"):
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute('UPDATE inventory SET part_name=?, part_number=?, current_stock=?, quantity_to_buy=?, in_basket=? WHERE id=?', 
-                                   (mod_name.strip(), mod_number.strip(), mod_stock, mod_qty_buy, 1 if mod_qty_buy > 0 else 0, selected_id))
-                    conn.commit(); conn.close()
-                    st.success("Updated successfully.")
-                    st.rerun()
+                    if not mod_name.strip():
+                        st.error("Part Name cannot be completely empty.")
+                    else:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute('UPDATE inventory SET part_name=?, part_number=?, current_stock=?, quantity_to_buy=?, in_basket=? WHERE id=?', 
+                                       (mod_name.strip(), mod_number.strip(), mod_stock, mod_qty_buy, 1 if mod_qty_buy > 0 else 0, selected_id))
+                        conn.commit(); conn.close()
+                        st.success("Item layout updated successfully.")
+                        st.rerun()
 
 # ==========================================
 # TAB 4: SHOPPING BASKET
