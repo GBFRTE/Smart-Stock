@@ -17,7 +17,6 @@ def init_db():
         try:
             cursor = conn.execute("PRAGMA table_info(inventory)")
             cols = [row['name'] for row in cursor.fetchall()]
-            # If the old schema exists, drop it to migrate seamlessly to the new structure
             if cols and 'quantity_to_purchase' not in cols:
                 conn.execute("DROP TABLE inventory")
         except Exception:
@@ -51,7 +50,7 @@ st.markdown("""
 st.markdown('<div class="main-title">Smart Stock</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Machinery Spare Parts Tracking Dashboard</div>', unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["Dashboard", "Shopping Basket (Reorder)", "Manage Parts"])
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Shopping Basket (Tokopedia)", "Manage Parts"])
 
 
 # ==============================================================================
@@ -66,7 +65,7 @@ with tab1:
     else:
         df['Status'] = df.apply(
             lambda r: "🔴 Out of Stock" if r['quantity'] == 0 
-            else ("🟡 Reorder Pending" if r['quantity_to_purchase'] > 0 else "🟢 Stocked"), 
+            else ("🟡 Procurement Pending" if r['quantity_to_purchase'] > 0 else "🟢 Stocked"), 
             axis=1
         )
         
@@ -76,7 +75,7 @@ with tab1:
         with m2:
             st.metric("Out of Stock Alerts", len(df[df['quantity'] == 0]))
         with m3:
-            st.metric("Items in Shopping Basket", len(df[df['quantity_to_purchase'] > 0]))
+            st.metric("Items in Basket", len(df[df['quantity_to_purchase'] > 0]))
             
         st.write("---")
         
@@ -95,19 +94,18 @@ with tab1:
 
 
 # ==============================================================================
-# TAB 2: SHOPPING BASKET (REORDER ITEMS)
+# TAB 2: SHOPPING BASKET (DIRECT TOKOPEDIA INTEGRATION)
 # ==============================================================================
 with tab2:
-    st.subheader("Items Added to Shop Basket")
+    st.subheader("Tokopedia Direct Match Basket")
     
     with get_db_connection() as conn:
         items = conn.execute("SELECT * FROM inventory WHERE quantity_to_purchase > 0 OR manual_finding = 1").fetchall()
         
     if not items:
-        st.success("Your shopping basket is empty. Add a purchase quantity to parts in the 'Manage Parts' tab.")
+        st.success("Your procurement basket is empty. Add a purchase quantity to parts under 'Manage Parts'.")
     else:
         for item in items:
-            # Fallback to 1 if it was forced into the list manually without a specific count
             qty_to_buy = max(1, item['quantity_to_purchase'])
             part_no = item['stock_code'].strip() if item['stock_code'] else ""
             part_name = item['name'].strip()
@@ -115,6 +113,7 @@ with tab2:
             search_query = f"{part_name} {part_no}".strip()
             encoded_query = urllib.parse.quote_plus(search_query)
             
+            # Check if we have a locked direct store link
             is_locked = bool(item['sourcing_url'] and item['sourcing_url'].strip().startswith("http"))
             
             with st.container(border=True):
@@ -123,46 +122,44 @@ with tab2:
                 with col_left:
                     st.markdown(f"### {part_name}")
                     st.markdown(f"**Part Number:** `{part_no if part_no else 'N/A'}`")
+                    
                     if is_locked:
-                        st.caption("🔒 Using saved direct store link")
+                        st.markdown("🎯 **Status:** 🔒 **Locked to Specific Store**")
+                        if st.button("Unlock / Reset Link", key=f"reset_{item['id']}"):
+                            with get_db_connection() as conn:
+                                conn.execute("UPDATE inventory SET sourcing_url = '' WHERE id = ?", (item['id'],))
+                                conn.commit()
+                            st.rerun()
                     else:
-                        st.caption("🔍 Using automated marketplace filters")
+                        st.markdown("🎯 **Status:** 🔍 Using Targeted Search (Most Sold Filter)")
+                        
+                        # Inline fast-locking form right inside the basket row
+                        with st.popover("🔗 Lock Direct Link", use_container_width=True):
+                            pasted_url = st.text_input("Paste exact store item link here:", key=f"input_url_{item['id']}")
+                            if st.button("Save & Lock Link", key=f"save_url_{item['id']}"):
+                                if pasted_url.strip().startswith("http"):
+                                    with get_db_connection() as conn:
+                                        conn.execute("UPDATE inventory SET sourcing_url = ? WHERE id = ?", (pasted_url.strip(), item['id']))
+                                        conn.commit()
+                                    st.success("Store link locked successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error("Please enter a valid URL.")
                         
                 with col_mid:
-                    st.markdown(f"Current Stock: `{item['quantity']}`")
+                    st.markdown(f"Current Stock Balance: `{item['quantity']}`")
                     st.markdown(f"#### Order Quantity: **{qty_to_buy} Units**")
                     
                 with col_right:
                     if is_locked:
-                        st.link_button("🛍️ Open Saved Store Link", item['sourcing_url'].strip(), type="primary", use_container_width=True)
+                        # Leads straight to your exact chosen vendor item page
+                        st.link_button("🛍️ Open Direct Store Page", item['sourcing_url'].strip(), type="primary", use_container_width=True)
                     else:
-                        platform = st.selectbox("Select Store", ["Tokopedia", "Shopee", "Lazada"], key=f"plat_{item['id']}")
-                        filter_type = st.selectbox("Sort By", ["Most Sold", "Cheapest", "Reliable"], key=f"filt_{item['id']}")
+                        # Fallback targeted search string pre-filtered for Best Selling/Most Reviews (ob=5)
+                        final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=5"
+                        st.link_button("🚀 Find & Match on Tokopedia", final_url, type="secondary", use_container_width=True)
                         
-                        if platform == "Tokopedia":
-                            if filter_type == "Cheapest":
-                                final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=3"
-                            elif filter_type == "Most Sold":
-                                final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=5"
-                            else: 
-                                final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=2"
-                        elif platform == "Shopee":
-                            if filter_type == "Cheapest":
-                                final_url = f"https://shopee.co.id/search?keyword={encoded_query}&sortBy=price&order=asc"
-                            elif filter_type == "Most Sold":
-                                final_url = f"https://shopee.co.id/search?keyword={encoded_query}&sortBy=sales"
-                            else: 
-                                final_url = f"https://shopee.co.id/search?keyword={encoded_query}&sortBy=relevancy"
-                        else: 
-                            if filter_type == "Cheapest":
-                                final_url = f"https://www.lazada.co.id/catalog/?q={encoded_query}&sort=priceasc"
-                            elif filter_type == "Most Sold":
-                                final_url = f"https://www.lazada.co.id/catalog/?q={encoded_query}" 
-                            else: 
-                                final_url = f"https://www.lazada.co.id/catalog/?q={encoded_query}"
-                        
-                        st.link_button(f"🚀 Find on {platform}", final_url, type="primary", use_container_width=True)
-                        
+                    st.write("")
                     if st.button("Clear from Basket", key=f"drop_{item['id']}", use_container_width=True):
                         with get_db_connection() as conn:
                             conn.execute("UPDATE inventory SET quantity_to_purchase = 0, manual_finding = 0 WHERE id = ?", (item['id'],))
@@ -185,9 +182,9 @@ with tab3:
                 input_code = st.text_input("Part Number")
             with col2:
                 input_qty = st.number_input("Current Stock Balance", min_value=0, value=0, step=1)
-                input_purchase = st.number_input("Quantity to Purchase (Adds to Basket)", min_value=0, value=0, step=1)
+                input_purchase = st.number_input("Quantity to Purchase (Instantly Adds to Basket)", min_value=0, value=0, step=1)
                 
-            input_url = st.text_input("Direct Product Link")
+            input_url = st.text_input("Direct Tokopedia Product Link (Optional Override)")
             input_force = st.checkbox("Force item into basket layout regardless of quantity")
             
             if st.form_submit_button("Save New Part"):
@@ -222,8 +219,8 @@ with tab3:
                 mod_code = st.text_input("Part Number", value=current['stock_code'])
                 col1, col2 = st.columns(2)
                 mod_qty = col1.number_input("Current Stock Balance", min_value=0, value=current['quantity'], step=1)
-                mod_purchase = col2.number_input("Quantity to Purchase (Adds to Basket)", min_value=0, value=current['quantity_to_purchase'], step=1)
-                mod_url = st.text_input("Direct Product Link", value=current['sourcing_url'] or "")
+                mod_purchase = col2.number_input("Quantity to Purchase (Instantly Adds to Basket)", min_value=0, value=current['quantity_to_purchase'], step=1)
+                mod_url = st.text_input("Direct Tokopedia Product Link", value=current['sourcing_url'] or "")
                 mod_force = st.checkbox("Force item into basket layout regardless of quantity", value=bool(current['manual_finding']))
                 
                 if st.form_submit_button("Save Changes"):
