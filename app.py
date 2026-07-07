@@ -2,326 +2,322 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import urllib.parse
+import json
 
-# --- Database Setup & Automated Safe Migration ---
+# --- AI DEPENDENCY VERIFICATION ---
+try:
+    import google.generativeai as genai
+    import PIL.Image
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
 
-DB_FILE = "inventory.db"
+# --- STATE MEMORY INITIALIZATION ---
+# This keeps the scanned data safe in memory when buttons are clicked
+if "extracted_data" not in st.session_state:
+    st.session_state.extracted_data = None
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+# --- DATABASE ENGINE SETUP ---
 def init_db():
-    with get_db_connection() as conn:
-        try:
-            cursor = conn.execute("PRAGMA table_info(inventory)")
-            cols = [row['name'] for row in cursor.fetchall()]
-            
-            # Strict verification of all required enterprise schema columns
-            required_columns = {"id", "name", "stock_code", "quantity", "quantity_to_purchase", "sourcing_url", "manual_finding"}
-            
-            # If the database exists but is missing any new column, drop and migrate smoothly
-            if cols and not required_columns.issubset(set(cols)):
-                conn.execute("DROP TABLE inventory")
-        except Exception:
-            pass
-            
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                stock_code TEXT,
-                quantity INTEGER DEFAULT 0,
-                quantity_to_purchase INTEGER DEFAULT 0,
-                sourcing_url TEXT,
-                manual_finding INTEGER DEFAULT 0
-            )
-        """)
-        conn.commit()
+    conn = sqlite3.connect('inventory.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_name TEXT NOT NULL,
+            part_number TEXT,
+            current_stock INTEGER DEFAULT 0,
+            quantity_to_buy INTEGER DEFAULT 0,
+            in_basket INTEGER DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# --- Premium Dark Theme UI Styling ---
-st.set_page_config(page_title="Smart Stock Elite", layout="wide", page_icon="📈")
+def get_db_connection():
+    return sqlite3.connect('inventory.db')
 
-# Injecting comprehensive dark mode overrides over default elements
-st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
-    
-    /* Global Background and Typography Overrides */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-        background-color: #0B0F17 !important; /* Premium Obsidian Midnight */
-        color: #E2E8F0 !important;
-    }
-    
-    /* Main Branding Header */
-    .main-title { 
-        font-size: 3rem; 
-        font-weight: 800; 
-        background: linear-gradient(135deg, #A5B4FC 0%, #6366F1 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        letter-spacing: -0.06em;
-        margin-bottom: 0.2rem; 
-    }
-    
-    .sub-title { 
-        font-size: 1.1rem; 
-        color: #94A3B8; /* Muted Slate Blue */
-        font-weight: 400;
-        letter-spacing: 0.02em;
-        margin-bottom: 3rem; 
-    }
-    
-    /* Cards & Containers Layout styling */
-    div[data-testid="stForm"], div[data-testid="stCustomComponentContainer"] {
-        background-color: #111827 !important;
-        border: 1px solid #1E293B !important;
-        border-radius: 12px !important;
-    }
-    
-    /* KPI Metrics Styling */
-    div[data-testid="stMetricValue"] {
-        font-family: 'JetBrains Mono', monospace !important;
-        font-size: 2.6rem !important;
-        font-weight: 700 !important;
-        color: #F8FAFC !important;
-    }
-    
-    div[data-testid="stMetricLabel"] {
-        color: #94A3B8 !important;
-        font-weight: 600 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    
-    /* Tabs Custom Dark Interface Styling */
-    button[data-baseweb="tab"] {
-        color: #64748B !important;
-        font-weight: 600 !important;
-    }
-    
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: #818CF8 !important;
-        border-bottom-color: #818CF8 !important;
-    }
-    
-    /* Inputs fields styling */
-    input, textarea {
-        background-color: #1E293B !important;
-        color: #F8FAFC !important;
-        border: 1px solid #334155 !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="main-title">Smart Stock Elite</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">High-Precision Machinery Components Procurement Dashboard</div>', unsafe_allow_html=True)
-
-tab1, tab2, tab3 = st.tabs(["Dashboard Overview", "Tokopedia Procurement Basket", "Inventory Management"])
-
-
-# ==============================================================================
-# TAB 1: DASHBOARD OVERVIEW
-# ==============================================================================
-with tab1:
-    with get_db_connection() as conn:
-        df = pd.read_sql_query("SELECT * FROM inventory", conn)
+# --- DYNAMIC MARKETPLACE URL GENERATOR ---
+def generate_procurement_url(part_name, part_number, marketplace, filter_type):
+    if part_number and part_number.strip():
+        search_term = f"{part_name.strip()} {part_number.strip()}"
+    else:
+        search_term = part_name.strip()
         
+    encoded_query = urllib.parse.quote(search_term)
+    
+    if marketplace == "Tokopedia":
+        base_url = f"https://www.tokopedia.com/search?q={encoded_query}"
+        if filter_type == "Cheapest": base_url += "&ob=3"  
+        elif filter_type == "Most Sold": base_url += "&ob=5"  
+        elif filter_type == "Trusted": base_url += "&fshop=2"  
+    elif marketplace == "Shopee":
+        base_url = f"https://shopee.co.id/search?keyword={encoded_query}"
+        if filter_type == "Cheapest": base_url += "&sortBy=price&order=asc"
+        elif filter_type == "Most Sold": base_url += "&sortBy=sales"
+        elif filter_type == "Trusted": base_url += "&sortBy=relevancy" 
+    elif marketplace == "Lazada":
+        base_url = f"https://www.lazada.co.id/catalog/?q={encoded_query}"
+        if filter_type == "Cheapest": base_url += "&sort=priceasc"  
+        elif filter_type == "Most Sold": base_url += "&sort=popularity"  
+        elif filter_type == "Trusted": base_url += "&rating=4"  
+            
+    return base_url
+
+# --- MINIMALIST BRANDING ---
+st.set_page_config(page_title="Smart Stock", page_icon="📦", layout="wide")
+
+st.title("📊 Smart Stock")
+st.markdown("### *Inventory & Procurement Control*")
+st.write("---")
+
+# --- SIDEBAR: AT-A-GLANCE SUMMARY & CONTROLS ---
+conn = get_db_connection()
+cursor = conn.cursor()
+cursor.execute("SELECT COUNT(*), SUM(current_stock), COUNT(CASE WHEN quantity_to_buy > 0 THEN 1 END) FROM inventory")
+db_summary = cursor.fetchone()
+conn.close()
+
+sb_total_types = db_summary[0] if db_summary[0] else 0
+sb_total_units = db_summary[1] if db_summary[1] else 0
+sb_needs_purchase = db_summary[2] if db_summary[2] else 0
+
+st.sidebar.header("📈 Stock Status Glance")
+sb_col1, sb_col2 = st.sidebar.columns(2)
+sb_col1.metric("Unique Parts", sb_total_types)
+sb_col2.metric("Total Units", sb_total_units)
+
+if sb_needs_purchase > 0:
+    st.sidebar.error(f"🚨 Needs Purchase: {sb_needs_purchase} items")
+else:
+    st.sidebar.success("✅ All parts fully stocked!")
+
+st.sidebar.write("---")
+
+st.sidebar.header("🇮🇩 Marketplace Settings")
+selected_marketplace = st.sidebar.selectbox("Select Platform", ["Tokopedia", "Shopee", "Lazada"], index=0)
+selected_filter = st.sidebar.selectbox("Apply Filter / Sorting", ["Default", "Cheapest", "Most Sold", "Trusted"], index=0)
+
+st.sidebar.write("---")
+
+st.sidebar.header("🔍 Part Name Finder")
+lookup_number = st.sidebar.text_input("Enter Part Number", placeholder="e.g., LF3806", key="sidebar_lookup")
+
+if lookup_number.strip():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT part_name FROM inventory WHERE LOWER(part_number) = LOWER(?) LIMIT 1", (lookup_number.strip(),))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        st.sidebar.success(f"✅ **Match Found:**\n\n{result[0]}")
+    else:
+        st.sidebar.error("❌ No matching part number found.")
+
+# --- MAIN INTERFACE NAVIGATION ---
+tab_view, tab_add, tab_modify, tab_basket, tab_gemini = st.tabs([
+    "🔍 View Inventory", 
+    "➕ Add Part", 
+    "✏️ Modify Part", 
+    "🛒 Shopping Basket",
+    "🤖 Gemini AI Scanner"
+])
+
+# ==========================================
+# TAB 1: VIEW INVENTORY
+# ==========================================
+with tab_view:
+    st.subheader("Current Stock Status")
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT id, part_name AS [Part Name], part_number AS [Part Number], current_stock AS [Current Stock], quantity_to_buy AS [Quantity to Buy] FROM inventory", conn)
+    conn.close()
+    
     if df.empty:
-        st.info("The inventory tracking system is currently empty. Open the Inventory Management tab to initialize entries.")
+        st.info("Inventory database is empty.")
     else:
-        df['Status'] = df.apply(
-            lambda r: "🔴 Out of Stock" if r['quantity'] == 0 
-            else ("🟡 Procurement Pending" if r['quantity_to_purchase'] > 0 else "🟢 Fully Stocked"), 
-            axis=1
-        )
-        
-        # Grid System for Core Analytics
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("Total Line Items", len(df))
-        with m2:
-            st.metric("Critical Depletions", len(df[df['quantity'] == 0]))
-        with m3:
-            st.metric("Active Purchase Orders", len(df[df['quantity_to_purchase'] > 0]))
-            
-        st.write("---")
-        
-        st.dataframe(
-            df[['stock_code', 'name', 'quantity', 'quantity_to_purchase', 'Status']],
-            column_config={
-                "stock_code": st.column_config.TextColumn("Part Number Reference"),
-                "name": st.column_config.TextColumn("Component Identity"),
-                "quantity": st.column_config.NumberColumn("Current On-Hand"),
-                "quantity_to_purchase": st.column_config.NumberColumn("Allocated Order Size"),
-                "Status": st.column_config.TextColumn("Operational Status")
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        st.dataframe(df[["Part Name", "Part Number", "Current Stock", "Quantity to Buy"]], use_container_width=True)
 
+# ==========================================
+# TAB 2: ADD PART
+# ==========================================
+with tab_add:
+    st.subheader("Register a New Part")
+    with st.form("add_part_form", clear_on_submit=True):
+        new_name = st.text_input("Part Name")
+        new_number = st.text_input("Part Number (Optional)")
+        new_stock = st.number_input("Current Stock", min_value=0, step=1)
+        new_qty_buy = st.number_input("Quantity to Buy", min_value=0, step=1)
+        if st.form_submit_button("Save Part"):
+            if not new_name.strip(): st.error("Part Name is required.")
+            else:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('INSERT INTO inventory (part_name, part_number, current_stock, quantity_to_buy, in_basket) VALUES (?, ?, ?, ?, ?)', 
+                               (new_name.strip(), new_number.strip(), new_stock, new_qty_buy, 1 if new_qty_buy > 0 else 0))
+                conn.commit(); conn.close()
+                st.success(f"Added {new_name}")
+                st.rerun()
 
-# ==============================================================================
-# TAB 2: TOKOPEDIA PROCUREMENT BASKET
-# ==============================================================================
-with tab2:
-    st.subheader("Active Order Queue")
+# ==========================================
+# TAB 3: MODIFY PART
+# ==========================================
+with tab_modify:
+    st.subheader("Update Existing Part Details")
+    conn = get_db_connection()
+    parts_df = pd.read_sql_query("SELECT id, part_name, part_number FROM inventory", conn)
+    conn.close()
     
-    with get_db_connection() as conn:
-        items = conn.execute("SELECT * FROM inventory WHERE quantity_to_purchase > 0 OR manual_finding = 1").fetchall()
+    if not parts_df.empty:
+        part_options = {f"{row['part_name']} [{row['part_number'] or 'No Number'}]": row['id'] for _, row in parts_df.iterrows()}
+        selected_id = part_options[st.selectbox("Select Part to Update", list(part_options.keys()))]
         
-    if not items:
-        st.success("All component pipelines are balanced. No active Tokopedia procurements required.")
-    else:
-        for item in items:
-            qty_to_buy = max(1, item['quantity_to_purchase'])
-            part_no = item['stock_code'].strip() if item['stock_code'] else ""
-            part_name = item['name'].strip()
-            
-            # Absolute Phrase Literal Matching Logic
-            search_query = f'"{part_name} {part_no}"'.strip()
-            encoded_query = urllib.parse.quote_plus(search_query)
-            
-            is_locked = bool(item['sourcing_url'] and item['sourcing_url'].strip().startswith("http"))
-            
-            with st.container(border=True):
-                col_left, col_mid, col_right = st.columns([3, 2, 2])
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT part_name, part_number, current_stock, quantity_to_buy FROM inventory WHERE id = ?", (selected_id,))
+        current_details = cursor.fetchone()
+        conn.close()
+        
+        if current_details:
+            with st.form("modify_part_form"):
+                mod_name = st.text_input("Part Name", value=current_details[0])
+                mod_number = st.text_input("Part Number", value=current_details[1])
+                mod_stock = st.number_input("Current Stock", min_value=0, value=int(current_details[2]))
+                mod_qty_buy = st.number_input("Quantity to Buy", min_value=0, value=int(current_details[3]))
                 
-                with col_left:
-                    st.markdown(f"### {part_name}")
-                    st.markdown(f"**Part Number Reference:** `{part_no if part_no else 'Unspecified'}`")
-                    
-                    if is_locked:
-                        st.markdown("🔒 **Link Status:** Verified Direct Supplier Locked")
-                        if st.button("Unlock Supply Chain Link", key=f"reset_{item['id']}"):
-                            with get_db_connection() as conn:
-                                conn.execute("UPDATE inventory SET sourcing_url = '' WHERE id = ?", (item['id'],))
-                                conn.commit()
-                            st.rerun()
-                    else:
-                        st.markdown("🔍 **Link Status:** Dynamic Strict Phrase Matching Active")
-                        
-                        with st.popover("Lock Direct Store URL", use_container_width=True):
-                            pasted_url = st.text_input("Paste exact verified supplier link:", key=f"input_url_{item['id']}")
-                            if st.button("Commit Link to Database", key=f"save_url_{item['id']}"):
-                                if pasted_url.strip().startswith("http"):
-                                    with get_db_connection() as conn:
-                                        conn.execute("UPDATE inventory SET sourcing_url = ? WHERE id = ?", (pasted_url.strip(), item['id']))
-                                        conn.commit()
-                                    st.success("Supplier endpoint successfully assigned.")
-                                    st.rerun()
-                                else:
-                                    st.error("Provide a fully qualified web address.")
-                        
-                with col_mid:
-                    st.markdown(f"Current Stock Balance: `{item['quantity']}`")
-                    st.markdown(f"#### Targeted Procurement: **{qty_to_buy} Units**")
-                    
-                with col_right:
-                    if is_locked:
-                        st.link_button("🛍️ Open Direct Store Page", item['sourcing_url'].strip(), type="primary", use_container_width=True)
-                    else:
-                        # Direct parameters targeting highest customer review metrics
-                        final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=5"
-                        st.link_button("🚀 Find Direct Match", final_url, type="secondary", use_container_width=True)
-                        
-                    st.write("")
-                    if st.button("Remove from Basket Queue", key=f"drop_{item['id']}", use_container_width=True):
-                        with get_db_connection() as conn:
-                            conn.execute("UPDATE inventory SET quantity_to_purchase = 0, manual_finding = 0 WHERE id = ?", (item['id'],))
-                            conn.commit()
-                        st.rerun()
-
-
-# ==============================================================================
-# TAB 3: INVENTORY MANAGEMENT
-# ==============================================================================
-with tab3:
-    action = st.radio("System Action Protocol", ["Add Part Record", "Modify Existing Record", "Purge Record"], horizontal=True)
-    st.write("---")
-    
-    if action == "Add Part Record":
-        with st.form("add_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                input_name = st.text_input("Component Name Reference")
-                input_code = st.text_input("Manufacturer Part Number")
-            with col2:
-                input_qty = st.number_input("On-Hand Inventory Units", min_value=0, value=0, step=1)
-                input_purchase = st.number_input("Immediate Purchase Allocation Size", min_value=0, value=0, step=1)
-                
-            input_url = st.text_input("Direct Tokopedia Link Overwrite")
-            input_force = st.checkbox("Force placement into the procurement queue")
-            
-            if st.form_submit_button("Initialize Component Entry"):
-                if not input_name.strip() or not input_code.strip():
-                    st.error("Both the Component Name and Part Number fields must be accurately designated.")
-                else:
-                    with get_db_connection() as conn:
-                        conn.execute("""
-                            INSERT INTO inventory (name, stock_code, quantity, quantity_to_purchase, sourcing_url, manual_finding)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (input_name.strip(), input_code.strip(), input_qty, input_purchase, input_url.strip(), 1 if input_force else 0))
-                        conn.commit()
-                    st.success(f"Successfully integrated record for: {input_name}")
+                if st.form_submit_button("Update Part Details"):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE inventory SET part_name=?, part_number=?, current_stock=?, quantity_to_buy=?, in_basket=? WHERE id=?', 
+                                   (mod_name.strip(), mod_number.strip(), mod_stock, mod_qty_buy, 1 if mod_qty_buy > 0 else 0, selected_id))
+                    conn.commit(); conn.close()
+                    st.success("Updated successfully.")
                     st.rerun()
 
-    elif action == "Modify Existing Record":
-        with get_db_connection() as conn:
-            records = conn.execute("SELECT id, name, stock_code FROM inventory").fetchall()
-            
-        if not records:
-            st.warning("No tracking records exist to amend.")
-        else:
-            record_map = {f"{r['name']} [PN: {r['stock_code']}]": r['id'] for r in records}
-            selected_item = st.selectbox("Select Target Registry to Modify", list(record_map.keys()))
-            db_id = record_map[selected_item]
-            
-            with get_db_connection() as conn:
-                current = conn.execute("SELECT * FROM inventory WHERE id = ?", (db_id,)).fetchone()
-                
-            with st.form("edit_form"):
-                mod_name = st.text_input("Component Name Reference", value=current['name'])
-                mod_code = st.text_input("Manufacturer Part Number", value=current['stock_code'])
-                col1, col2 = st.columns(2)
-                mod_qty = col1.number_input("On-Hand Inventory Units", min_value=0, value=current['quantity'], step=1)
-                mod_purchase = col2.number_input("Immediate Purchase Allocation Size", min_value=0, value=current['quantity_to_purchase'], step=1)
-                mod_url = st.text_input("Direct Tokopedia Link Overwrite", value=current['sourcing_url'] or "")
-                mod_force = st.checkbox("Force placement into the procurement queue", value=bool(current['manual_finding']))
-                
-                if st.form_submit_button("Commit Database Adjustments"):
-                    if not mod_name.strip() or not mod_code.strip():
-                        st.error("Component Name and Part Number references cannot be left vacant.")
-                    else:
-                        with get_db_connection() as conn:
-                            conn.execute("""
-                                UPDATE inventory 
-                                SET name = ?, stock_code = ?, quantity = ?, quantity_to_purchase = ?, sourcing_url = ?, manual_finding = ?
-                                WHERE id = ?
-                            """, (mod_name.strip(), mod_code.strip(), mod_qty, mod_purchase, mod_url.strip(), 1 if mod_force else 0, db_id))
-                            conn.commit()
-                        st.success("Database logs modified successfully.")
-                        st.rerun()
+# ==========================================
+# TAB 4: SHOPPING BASKET
+# ==========================================
+with tab_basket:
+    st.subheader("Items to Procure")
+    conn = get_db_connection()
+    basket_df = pd.read_sql_query("SELECT id, part_name, part_number, current_stock, quantity_to_buy FROM inventory WHERE quantity_to_buy > 0", conn)
+    conn.close()
+    
+    if basket_df.empty: st.info("Shopping basket is empty.")
+    else:
+        for _, row in basket_df.iterrows():
+            url = generate_procurement_url(row['part_name'], row['part_number'], selected_marketplace, selected_filter)
+            with st.container():
+                st.markdown(f"### 📦 {row['part_name']}")
+                c_det, c_act = st.columns([3, 2])
+                c_det.write(f"**Part Code:** `{row['part_number'] or 'N/A'}` | **Stock:** {row['current_stock']} | **Order Qty:** {row['quantity_to_buy']}")
+                st.link_button(f"🛒 Search on {selected_marketplace}", url, use_container_width=True)
+                if c_act.button(f"Mark Received", key=f"rec_{row['id']}", use_container_width=True):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE inventory SET current_stock=?, quantity_to_buy=0 WHERE id=?', (row['current_stock'] + row['quantity_to_buy'], row['id']))
+                    conn.commit(); conn.close()
+                    st.rerun()
 
-    elif action == "Purge Record":
-        with get_db_connection() as conn:
-            records = conn.execute("SELECT id, name, stock_code FROM inventory").fetchall()
+# ==========================================
+# TAB 5: 🤖 GEMINI INTELLIGENT AI SCANNER
+# ==========================================
+with tab_gemini:
+    st.subheader("🤖 Gemini Intelligent Import Engine")
+    st.markdown("Drop a **picture** or paste a **messy message** to auto-extract your items.")
+    
+    if not HAS_GEMINI:
+        st.error("Missing required AI modules. Run: `pip install google-generativeai pillow` in your terminal.")
+        
+    api_key = st.text_input("🔑 Enter Gemini API Key", type="password", help="Get a free key from Google AI Studio")
+    st.write("---")
+    
+    input_type = st.radio("Choose Input Format:", ["📋 Paste Text/Chat Message", "📸 Upload/Snap a Picture"], horizontal=True)
+    
+    ai_prompt = """
+    You are an expert industrial inventory assistant. Analyze the input data and extract all spare parts or machine components mentioned.
+    You MUST output a valid JSON array of objects and absolutely NOTHING else. Do not include markdown tags (no ```json).
+    Each item object inside the array must exactly mirror this structure:
+    [
+      {
+        "part_name": "Clean descriptive name in English (e.g., Hydraulic Seal Kit)",
+        "part_number": "The specific alpha-numeric code/serial number if visible, otherwise pass empty string ''",
+        "current_stock": integer (use the listed current/on-hand amount, or 0 if unmentioned),
+        "quantity_to_buy": integer (use the listed order/purchase amount, or 0 if unmentioned)
+      }
+    ]
+    """
+
+    if input_type == "📋 Paste Text/Chat Message":
+        user_text = st.text_area("Paste chaotic text or message columns below:", height=150)
+        if st.button("✨ Scan Text Content", use_container_width=True) and HAS_GEMINI:
+            if not api_key.strip():
+                st.warning("Please type in your API Key first.")
+            elif not user_text.strip():
+                st.error("Please paste your text lines first.")
+            else:
+                with st.spinner("Gemini is parsing linguistic syntax layout..."):
+                    try:
+                        genai.configure(api_key=api_key.strip())
+                        model = genai.GenerativeModel('gemini-2.5-flash')
+                        response = model.generate_content([ai_prompt, user_text])
+                        clean_json = response.text.replace("```json", "").replace("```", "").strip()
+                        st.session_state.extracted_data = json.loads(clean_json)
+                    except Exception as e:
+                        st.error(f"AI parsing execution aborted: {str(e)}")
+
+    else:
+        uploaded_pic = st.file_uploader("Upload inventory photo or document capture:", type=["jpg", "jpeg", "png"])
+        if uploaded_pic:
+            st.image(uploaded_pic, caption="Staged Visual Input Source", width=300)
             
-        if not records:
-            st.warning("No tracking records exist to purge.")
-        else:
-            record_map = {f"{r['name']} [PN: {r['stock_code']}]": r['id'] for r in records}
-            selected_purge = st.selectbox("Select Target Registry to Purge", list(record_map.keys()))
-            db_id = record_map[selected_purge]
+            if st.button("✨ Scan Picture Pixels", use_container_width=True) and HAS_GEMINI:
+                if not api_key.strip():
+                    st.warning("Please type in your API Key first.")
+                else:
+                    with st.spinner("Gemini Vision processing image matrices..."):
+                        try:
+                            img = PIL.Image.open(uploaded_pic)
+                            genai.configure(api_key=api_key.strip())
+                            model = genai.GenerativeModel('gemini-2.5-flash')
+                            response = model.generate_content([ai_prompt, img])
+                            clean_json = response.text.replace("```json", "").replace("```", "").strip()
+                            st.session_state.extracted_data = json.loads(clean_json)
+                        except Exception as e:
+                            st.error(f"Vision parsing execution aborted: {str(e)}")
+
+    # --- STRUCTURAL CONFIRMATION PANEL (Uses Session Memory) ---
+    if st.session_state.extracted_data:
+        st.write("---")
+        st.success("🎉 Gemini extracted matching items perfectly! Review the data layout before saving:")
+        
+        preview_df = pd.DataFrame(st.session_state.extracted_data)
+        st.dataframe(preview_df, use_container_width=True)
+        
+        if st.button("📥 Save All Extracted Items to SQLite Database", use_container_width=True, type="primary"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
             
-            confirm = st.checkbox("Authorize permanent deletion of this registry sequence")
-            if st.button("Execute Record Purge", type="secondary") and confirm:
-                with get_db_connection() as conn:
-                    conn.execute("DELETE FROM inventory WHERE id = ?", (db_id,))
-                    conn.commit()
-                st.success("Component tracing record completely extracted from system memory.")
-                st.rerun()
+            saved_count = 0
+            for item in st.session_state.extracted_data:
+                p_name = item.get("part_name", "Unmapped Component").strip()
+                p_num = item.get("part_number", "").strip()
+                c_stock = int(item.get("current_stock", 0))
+                q_buy = int(item.get("quantity_to_buy", 0))
+                
+                if p_name:
+                    cursor.execute('''
+                        INSERT INTO inventory (part_name, part_number, current_stock, quantity_to_buy, in_basket)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (p_name, p_num, c_stock, q_buy, 1 if q_buy > 0 else 0))
+                    saved_count += 1
+                    
+            conn.commit()
+            conn.close()
+            
+            # Wipe state variable clear so database content doesn't double-trigger on subsequent updates
+            st.session_state.extracted_data = None
+            
+            st.success(f"Successfully integrated {saved_count} items directly into your active inventory records!")
+            st.rerun()
