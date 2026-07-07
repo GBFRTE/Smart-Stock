@@ -13,13 +13,12 @@ except ImportError:
     HAS_GEMINI = False
 
 # --- STATE MEMORY INITIALIZATION ---
-# This keeps the scanned data safe in memory when buttons are clicked
 if "extracted_data" not in st.session_state:
     st.session_state.extracted_data = None
 
 # --- DATABASE ENGINE SETUP ---
 def init_db():
-    conn = sqlite3.connect('inventory.db')
+    conn = sqlite3.connect('inventory_v2.db')
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS inventory (
@@ -37,7 +36,7 @@ def init_db():
 init_db()
 
 def get_db_connection():
-    return sqlite3.connect('inventory.db')
+    return sqlite3.connect('inventory_v2.db')
 
 # --- DYNAMIC MARKETPLACE URL GENERATOR ---
 def generate_procurement_url(part_name, part_number, marketplace, filter_type):
@@ -73,7 +72,7 @@ st.title("📊 Smart Stock")
 st.markdown("### *Inventory & Procurement Control*")
 st.write("---")
 
-# --- SIDEBAR: AT-A-GLANCE SUMMARY & CONTROLS ---
+# --- SIDEBAR: AT-A-GLANCE SUMMARY & ADAPTIVE COLOR INDICATOR ---
 conn = get_db_connection()
 cursor = conn.cursor()
 cursor.execute("SELECT COUNT(*), SUM(current_stock), COUNT(CASE WHEN quantity_to_buy > 0 THEN 1 END) FROM inventory")
@@ -83,16 +82,39 @@ conn.close()
 sb_total_types = db_summary[0] if db_summary[0] else 0
 sb_total_units = db_summary[1] if db_summary[1] else 0
 sb_needs_purchase = db_summary[2] if db_summary[2] else 0
+sb_healthy_parts = sb_total_types - sb_needs_purchase
 
 st.sidebar.header("📈 Stock Status Glance")
+
+# Dynamic HTML Indicator Box Setup
+if sb_needs_purchase == 0:
+    status_color = "#198754"  # Vibrant Green
+    status_text = f"🟢 SYSTEM HEALTHY<br><span style='font-size:13px;'>All {sb_total_types} components are fully stocked.</span>"
+elif sb_needs_purchase <= 3:
+    status_color = "#ffc107"  # Warning Amber
+    status_text = f"🟡 WARNING DELAYS<br><span style='font-size:13px;'>{sb_needs_purchase} items pending procurement buy lines.</span>"
+else:
+    status_color = "#dc3545"  # Critical Red
+    status_text = f"🔴 CRITICAL BACKLOG<br><span style='font-size:13px;'>Lots of due orders! {sb_needs_purchase} items need immediate buying.</span>"
+
+# Inject the styled visual tracking widget
+st.sidebar.markdown(
+    f"""
+    <div style="background-color: {status_color}; padding: 14px; border-radius: 8px; color: {'#000000' if status_color=='#ffc107' else '#ffffff'}; font-weight: bold; margin-bottom: 15px; text-align: center; box-shadow: 1px 1px 5px rgba(0,0,0,0.15);">
+        {status_text}
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
+# Render organized layout breakdowns
 sb_col1, sb_col2 = st.sidebar.columns(2)
 sb_col1.metric("Unique Parts", sb_total_types)
-sb_col2.metric("Total Units", sb_total_units)
+sb_col2.metric("Total Units On Hand", sb_total_units)
 
-if sb_needs_purchase > 0:
-    st.sidebar.error(f"🚨 Needs Purchase: {sb_needs_purchase} items")
-else:
-    st.sidebar.success("✅ All parts fully stocked!")
+sb_col3, sb_col4 = st.sidebar.columns(2)
+sb_col3.metric("Healthy Stocked Lines", sb_healthy_parts)
+sb_col4.metric("Procurement Due", sb_needs_purchase, delta=f"+{sb_needs_purchase}" if sb_needs_purchase > 0 else None, delta_color="inverse")
 
 st.sidebar.write("---")
 
@@ -228,7 +250,7 @@ with tab_gemini:
     st.markdown("Drop a **picture** or paste a **messy message** to auto-extract your items.")
     
     if not HAS_GEMINI:
-        st.error("Missing required AI modules. Run: `pip install google-generativeai pillow` in your terminal.")
+        st.error("Missing required AI modules. Check your requirements.txt deployment file profile.")
         
     api_key = st.text_input("🔑 Enter Gemini API Key", type="password", help="Get a free key from Google AI Studio")
     st.write("---")
@@ -287,7 +309,7 @@ with tab_gemini:
                         except Exception as e:
                             st.error(f"Vision parsing execution aborted: {str(e)}")
 
-    # --- STRUCTURAL CONFIRMATION PANEL (Uses Session Memory) ---
+    # --- STRUCTURAL CONFIRMATION PANEL ---
     if st.session_state.extracted_data:
         st.write("---")
         st.success("🎉 Gemini extracted matching items perfectly! Review the data layout before saving:")
@@ -316,8 +338,6 @@ with tab_gemini:
             conn.commit()
             conn.close()
             
-            # Wipe state variable clear so database content doesn't double-trigger on subsequent updates
             st.session_state.extracted_data = None
-            
             st.success(f"Successfully integrated {saved_count} items directly into your active inventory records!")
             st.rerun()
