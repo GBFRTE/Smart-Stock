@@ -4,6 +4,7 @@ import pandas as pd
 import urllib.parse
 
 # --- Database Setup ---
+
 DB_FILE = "inventory.db"
 
 def get_db_connection():
@@ -16,7 +17,8 @@ def init_db():
         try:
             cursor = conn.execute("PRAGMA table_info(inventory)")
             cols = [row['name'] for row in cursor.fetchall()]
-            if cols and 'target_stock' not in cols:
+            # If the old schema exists, drop it to migrate seamlessly to the new structure
+            if cols and 'quantity_to_purchase' not in cols:
                 conn.execute("DROP TABLE inventory")
         except Exception:
             pass
@@ -27,7 +29,7 @@ def init_db():
                 name TEXT NOT NULL,
                 stock_code TEXT,
                 quantity INTEGER DEFAULT 0,
-                target_stock INTEGER DEFAULT 10,
+                quantity_to_purchase INTEGER DEFAULT 0,
                 sourcing_url TEXT,
                 manual_finding INTEGER DEFAULT 0
             )
@@ -49,7 +51,7 @@ st.markdown("""
 st.markdown('<div class="main-title">Smart Stock</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Machinery Spare Parts Tracking Dashboard</div>', unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["Dashboard", "Reorder Items", "Manage Parts"])
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Shopping Basket (Reorder)", "Manage Parts"])
 
 
 # ==============================================================================
@@ -62,31 +64,29 @@ with tab1:
     if df.empty:
         st.info("The inventory is currently empty. Go to the Manage Parts tab to add items.")
     else:
-        df['Shortage'] = df.apply(lambda r: max(0, r['target_stock'] - r['quantity']), axis=1)
         df['Status'] = df.apply(
             lambda r: "🔴 Out of Stock" if r['quantity'] == 0 
-            else ("🟡 Low Stock" if r['quantity'] < r['target_stock'] else "🟢 Optimal"), 
+            else ("🟡 Reorder Pending" if r['quantity_to_purchase'] > 0 else "🟢 Stocked"), 
             axis=1
         )
         
         m1, m2, m3 = st.columns(3)
         with m1:
-            st.metric("Total Items", len(df))
+            st.metric("Total Items Tracked", len(df))
         with m2:
             st.metric("Out of Stock Alerts", len(df[df['quantity'] == 0]))
         with m3:
-            st.metric("Items to Reorder", len(df[df['Shortage'] > 0]))
+            st.metric("Items in Shopping Basket", len(df[df['quantity_to_purchase'] > 0]))
             
         st.write("---")
         
         st.dataframe(
-            df[['stock_code', 'name', 'quantity', 'target_stock', 'Shortage', 'Status']],
+            df[['stock_code', 'name', 'quantity', 'quantity_to_purchase', 'Status']],
             column_config={
                 "stock_code": st.column_config.TextColumn("Part Number"),
                 "name": st.column_config.TextColumn("Part Name"),
                 "quantity": st.column_config.NumberColumn("Current Stock"),
-                "target_stock": st.column_config.NumberColumn("Target Stock"),
-                "Shortage": st.column_config.NumberColumn("Quantity to Buy"),
+                "quantity_to_purchase": st.column_config.NumberColumn("Quantity to Purchase"),
                 "Status": st.column_config.TextColumn("Status")
             },
             hide_index=True,
@@ -95,19 +95,20 @@ with tab1:
 
 
 # ==============================================================================
-# TAB 2: REORDER ITEMS
+# TAB 2: SHOPPING BASKET (REORDER ITEMS)
 # ==============================================================================
 with tab2:
-    st.subheader("Automated Purchasing Links")
+    st.subheader("Items Added to Shop Basket")
     
     with get_db_connection() as conn:
-        items = conn.execute("SELECT * FROM inventory WHERE quantity < target_stock OR manual_finding = 1").fetchall()
+        items = conn.execute("SELECT * FROM inventory WHERE quantity_to_purchase > 0 OR manual_finding = 1").fetchall()
         
     if not items:
-        st.success("All parts are fully stocked.")
+        st.success("Your shopping basket is empty. Add a purchase quantity to parts in the 'Manage Parts' tab.")
     else:
         for item in items:
-            qty_to_buy = max(1, item['target_stock'] - item['quantity'])
+            # Fallback to 1 if it was forced into the list manually without a specific count
+            qty_to_buy = max(1, item['quantity_to_purchase'])
             part_no = item['stock_code'].strip() if item['stock_code'] else ""
             part_name = item['name'].strip()
             
@@ -128,7 +129,7 @@ with tab2:
                         st.caption("🔍 Using automated marketplace filters")
                         
                 with col_mid:
-                    st.markdown(f"Current Stock: `{item['quantity']}` / Target: `{item['target_stock']}`")
+                    st.markdown(f"Current Stock: `{item['quantity']}`")
                     st.markdown(f"#### Order Quantity: **{qty_to_buy} Units**")
                     
                 with col_right:
@@ -162,12 +163,11 @@ with tab2:
                         
                         st.link_button(f"🚀 Find on {platform}", final_url, type="primary", use_container_width=True)
                         
-                    if item['manual_finding'] == 1:
-                        if st.button("Remove from List", key=f"drop_{item['id']}", use_container_width=True):
-                            with get_db_connection() as conn:
-                                conn.execute("UPDATE inventory SET manual_finding = 0 WHERE id = ?", (item['id'],))
-                                conn.commit()
-                            st.rerun()
+                    if st.button("Clear from Basket", key=f"drop_{item['id']}", use_container_width=True):
+                        with get_db_connection() as conn:
+                            conn.execute("UPDATE inventory SET quantity_to_purchase = 0, manual_finding = 0 WHERE id = ?", (item['id'],))
+                            conn.commit()
+                        st.rerun()
 
 
 # ==============================================================================
@@ -185,10 +185,10 @@ with tab3:
                 input_code = st.text_input("Part Number")
             with col2:
                 input_qty = st.number_input("Current Stock Balance", min_value=0, value=0, step=1)
-                input_target = st.number_input("Target Stock Limit", min_value=1, value=10, step=1)
+                input_purchase = st.number_input("Quantity to Purchase (Adds to Basket)", min_value=0, value=0, step=1)
                 
             input_url = st.text_input("Direct Product Link")
-            input_force = st.checkbox("Force item into reorder list")
+            input_force = st.checkbox("Force item into basket layout regardless of quantity")
             
             if st.form_submit_button("Save New Part"):
                 if not input_name.strip() or not input_code.strip():
@@ -196,9 +196,9 @@ with tab3:
                 else:
                     with get_db_connection() as conn:
                         conn.execute("""
-                            INSERT INTO inventory (name, stock_code, quantity, target_stock, sourcing_url, manual_finding)
+                            INSERT INTO inventory (name, stock_code, quantity, quantity_to_purchase, sourcing_url, manual_finding)
                             VALUES (?, ?, ?, ?, ?, ?)
-                        """, (input_name.strip(), input_code.strip(), input_qty, input_target, input_url.strip(), 1 if input_force else 0))
+                        """, (input_name.strip(), input_code.strip(), input_qty, input_purchase, input_url.strip(), 1 if input_force else 0))
                         conn.commit()
                     st.success(f"Saved part: {input_name}")
                     st.rerun()
@@ -222,9 +222,9 @@ with tab3:
                 mod_code = st.text_input("Part Number", value=current['stock_code'])
                 col1, col2 = st.columns(2)
                 mod_qty = col1.number_input("Current Stock Balance", min_value=0, value=current['quantity'], step=1)
-                mod_target = col2.number_input("Target Stock Limit", min_value=1, value=current['target_stock'], step=1)
+                mod_purchase = col2.number_input("Quantity to Purchase (Adds to Basket)", min_value=0, value=current['quantity_to_purchase'], step=1)
                 mod_url = st.text_input("Direct Product Link", value=current['sourcing_url'] or "")
-                mod_force = st.checkbox("Force item into reorder list", value=bool(current['manual_finding']))
+                mod_force = st.checkbox("Force item into basket layout regardless of quantity", value=bool(current['manual_finding']))
                 
                 if st.form_submit_button("Save Changes"):
                     if not mod_name.strip() or not mod_code.strip():
@@ -233,9 +233,9 @@ with tab3:
                         with get_db_connection() as conn:
                             conn.execute("""
                                 UPDATE inventory 
-                                SET name = ?, stock_code = ?, quantity = ?, target_stock = ?, sourcing_url = ?, manual_finding = ?
+                                SET name = ?, stock_code = ?, quantity = ?, quantity_to_purchase = ?, sourcing_url = ?, manual_finding = ?
                                 WHERE id = ?
-                            """, (mod_name.strip(), mod_code.strip(), mod_qty, mod_target, mod_url.strip(), 1 if mod_force else 0, db_id))
+                            """, (mod_name.strip(), mod_code.strip(), mod_qty, mod_purchase, mod_url.strip(), 1 if mod_force else 0, db_id))
                             conn.commit()
                         st.success("Changes saved successfully.")
                         st.rerun()
