@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import urllib.parse
 
-# --- Database Setup ---
+# --- Database Setup & Automated Safe Migration ---
 
 DB_FILE = "inventory.db"
 
@@ -17,7 +17,12 @@ def init_db():
         try:
             cursor = conn.execute("PRAGMA table_info(inventory)")
             cols = [row['name'] for row in cursor.fetchall()]
-            if cols and 'quantity_to_purchase' not in cols:
+            
+            # Strict verification of all required enterprise schema columns
+            required_columns = {"id", "name", "stock_code", "quantity", "quantity_to_purchase", "sourcing_url", "manual_finding"}
+            
+            # If the database exists but is missing any new column, drop and migrate smoothly
+            if cols and not required_columns.issubset(set(cols)):
                 conn.execute("DROP TABLE inventory")
         except Exception:
             pass
@@ -37,45 +42,78 @@ def init_db():
 
 init_db()
 
-# --- Premium UI Styling ---
+# --- Premium Dark Theme UI Styling ---
 st.set_page_config(page_title="Smart Stock Elite", layout="wide", page_icon="📈")
 
-# Injecting clean custom CSS for an executive layout
+# Injecting comprehensive dark mode overrides over default elements
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
     
-    html, body, [data-testid="stAppViewContainer"] {
-        font-family: 'Inter', sans-serif;
-        background-color: #FAFAFA;
+    /* Global Background and Typography Overrides */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background-color: #0B0F17 !important; /* Premium Obsidian Midnight */
+        color: #E2E8F0 !important;
     }
     
+    /* Main Branding Header */
     .main-title { 
-        font-size: 2.8rem; 
+        font-size: 3rem; 
         font-weight: 800; 
-        color: #312E81; /* Premium Deep Indigo */
-        letter-spacing: -0.05em;
-        margin-bottom: 0.1rem; 
+        background: linear-gradient(135deg, #A5B4FC 0%, #6366F1 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        letter-spacing: -0.06em;
+        margin-bottom: 0.2rem; 
     }
     
     .sub-title { 
         font-size: 1.1rem; 
-        color: #475569; /* Polished Slate Gray */
+        color: #94A3B8; /* Muted Slate Blue */
         font-weight: 400;
-        margin-bottom: 2.5rem; 
+        letter-spacing: 0.02em;
+        margin-bottom: 3rem; 
     }
     
+    /* Cards & Containers Layout styling */
+    div[data-testid="stForm"], div[data-testid="stCustomComponentContainer"] {
+        background-color: #111827 !important;
+        border: 1px solid #1E293B !important;
+        border-radius: 12px !important;
+    }
+    
+    /* KPI Metrics Styling */
     div[data-testid="stMetricValue"] {
-        font-size: 2.2rem !important;
+        font-family: 'JetBrains Mono', monospace !important;
+        font-size: 2.6rem !important;
         font-weight: 700 !important;
-        color: #1E1B4B !important;
+        color: #F8FAFC !important;
     }
     
-    .status-badge {
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 600;
+    div[data-testid="stMetricLabel"] {
+        color: #94A3B8 !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    /* Tabs Custom Dark Interface Styling */
+    button[data-baseweb="tab"] {
+        color: #64748B !important;
+        font-weight: 600 !important;
+    }
+    
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #818CF8 !important;
+        border-bottom-color: #818CF8 !important;
+    }
+    
+    /* Inputs fields styling */
+    input, textarea {
+        background-color: #1E293B !important;
+        color: #F8FAFC !important;
+        border: 1px solid #334155 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -102,7 +140,7 @@ with tab1:
             axis=1
         )
         
-        # Key Metrics Grid
+        # Grid System for Core Analytics
         m1, m2, m3 = st.columns(3)
         with m1:
             st.metric("Total Line Items", len(df))
@@ -116,7 +154,7 @@ with tab1:
         st.dataframe(
             df[['stock_code', 'name', 'quantity', 'quantity_to_purchase', 'Status']],
             column_config={
-                "stock_code": st.column_config.TextColumn("Part Number"),
+                "stock_code": st.column_config.TextColumn("Part Number Reference"),
                 "name": st.column_config.TextColumn("Component Identity"),
                 "quantity": st.column_config.NumberColumn("Current On-Hand"),
                 "quantity_to_purchase": st.column_config.NumberColumn("Allocated Order Size"),
@@ -144,8 +182,7 @@ with tab2:
             part_no = item['stock_code'].strip() if item['stock_code'] else ""
             part_name = item['name'].strip()
             
-            # Precision Strict Matching Layout
-            # Wraps the term in quotes to bypass lookalikes and locate the definitive merchant
+            # Absolute Phrase Literal Matching Logic
             search_query = f'"{part_name} {part_no}"'.strip()
             encoded_query = urllib.parse.quote_plus(search_query)
             
@@ -168,7 +205,6 @@ with tab2:
                     else:
                         st.markdown("🔍 **Link Status:** Dynamic Strict Phrase Matching Active")
                         
-                        # Clean popover module for setting permanent supply lines
                         with st.popover("Lock Direct Store URL", use_container_width=True):
                             pasted_url = st.text_input("Paste exact verified supplier link:", key=f"input_url_{item['id']}")
                             if st.button("Commit Link to Database", key=f"save_url_{item['id']}"):
@@ -182,15 +218,14 @@ with tab2:
                                     st.error("Provide a fully qualified web address.")
                         
                 with col_mid:
-                    st.markdown(f"Current Stock: `{item['quantity']}`")
+                    st.markdown(f"Current Stock Balance: `{item['quantity']}`")
                     st.markdown(f"#### Targeted Procurement: **{qty_to_buy} Units**")
                     
                 with col_right:
                     if is_locked:
-                        # Fires directly to the dedicated supplier catalog item
                         st.link_button("🛍️ Open Direct Store Page", item['sourcing_url'].strip(), type="primary", use_container_width=True)
                     else:
-                        # Searches Tokopedia using high-volume sorting filters to isolate the definitive store listing
+                        # Direct parameters targeting highest customer review metrics
                         final_url = f"https://www.tokopedia.com/search?st=product&q={encoded_query}&ob=5"
                         st.link_button("🚀 Find Direct Match", final_url, type="secondary", use_container_width=True)
                         
