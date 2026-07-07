@@ -68,7 +68,7 @@ def generate_procurement_url(part_name, part_number, marketplace, filter_type):
 # --- MINIMALIST BRANDING ---
 st.set_page_config(page_title="Smart Stock", page_icon="📦", layout="wide")
 
-st.title("📊 Smart Stock")
+st.title("Smart Stock")
 st.markdown("### *Inventory & Procurement Control*")
 st.write("---")
 
